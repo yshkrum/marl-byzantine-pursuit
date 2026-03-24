@@ -1,0 +1,37 @@
+# Experiment 1: Byzantine Degradation Curve
+# Owner: D (Experiment Runner)
+# Ticket: EXP-04
+#
+# Research question: how does capture time degrade as Byzantine fraction increases?
+# Fix N=6 seekers, vary f, broadcast protocol, maze environment.
+
+experiment:
+  name: exp1_byzantine_degradation
+  description: "Capture time vs Byzantine fraction, N=6, broadcast protocol"
+
+env:
+  grid_size: 20
+  n_seekers: 6
+  obs_radius: 5
+  obstacle_density: 0.25
+  max_steps: 500
+
+training:
+  algorithm: mappo
+  n_episodes: 300
+  n_seeds: 5
+
+comms:
+  protocol: broadcast
+
+sweep:
+  byzantine_fraction: [0.0, 0.17, 0.33, 0.5]
+
+logging:
+  metrics:
+    - capture_time
+    - capture_rate
+    - policy_entropy
+    - message_divergence
+  output_dir: experiments/results/exp1/
+  wandb_project: marl-byzantine-pursuit
