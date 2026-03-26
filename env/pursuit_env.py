@@ -141,6 +141,7 @@ class ByzantinePursuitEnv(AECEnv):
     metadata: dict[str, Any] = {
         "render_modes": ["human", "rgb_array"],
         "name": "byzantine_pursuit_v0",
+        "is_parallelizable": True,
     }
 
     # ------------------------------------------------------------------
@@ -643,23 +644,66 @@ class ByzantinePursuitEnv(AECEnv):
         AssertionError
             If called before ``reset()``.
         """
-        assert self.agents, "Call env.reset() before env.step()."
+        assert self.grid is not None, "Call env.reset() before env.step()."
 
-        # TODO (ENV-01 / RL-04): implement full step logic.
-        # Sub-tasks:
-        #   - Resolve movement: apply _ACTION_DELTAS[action], reject if obstacle
-        #   - Update self.positions[self.agent_selection]
-        #   - Detect capture: any seeker pos == hider pos → set terminations
-        #   - Detect timeout: self._step_count >= self.max_steps → truncations
-        #   - Call compute_rewards() from agents/reward.py (dependency: RL-04)
-        #   - Update self.rewards, self._cumulative_rewards
-        #   - Increment self._step_count
-        #   - Rotate self.agent_selection via self._agent_selector.next()
-        #   - Remove terminated agents from self.agents
-        raise NotImplementedError(
-            "ENV-01/RL-04: step() pending reward.py from Role B (RL-04). "
-            "Implement movement, capture detection, and reward computation."
+        agent = self.agent_selection
+
+        # Skip already-dead agents (standard PettingZoo AEC convention)
+        if self.terminations.get(agent, False) or self.truncations.get(agent, False):
+            self._cumulative_rewards[agent] = 0
+            self.agent_selection = self._agent_selector.next()
+            return
+
+        # 1. Save positions before this agent moves (needed for distance shaping)
+        prev_positions = dict(self.positions)
+
+        # 2. Resolve movement — reject if obstacle or out of bounds
+        row, col = self.positions[agent]
+        dr, dc = _ACTION_DELTAS[action]
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < self.grid_size and 0 <= nc < self.grid_size and not self.grid[nr, nc]:
+            self.positions[agent] = (nr, nc)
+
+        # 3. Detect capture: any seeker occupies the hider's cell
+        hider_pos = self.positions["hider"]
+        captured = any(
+            self.positions[a] == hider_pos
+            for a in self.agents
+            if a.startswith("seeker_")
         )
+
+        # 4. Increment step count and detect timeout
+        self._step_count += 1
+        timeout = self._step_count >= self.max_steps
+
+        # 5. Compute rewards via the frozen reward function (RL-04)
+        from agents.reward import compute_rewards
+        step_rewards = compute_rewards(
+            state={"positions": self.positions},
+            actions={agent: action},
+            prev_state={"positions": prev_positions},
+            n_seekers=self.n_seekers,
+        )
+
+        # 6. Set terminations / truncations for all agents
+        if captured:
+            for a in self.agents:
+                self.terminations[a] = True
+        if timeout:
+            for a in self.agents:
+                self.truncations[a] = True
+
+        # 7. Update rewards and accumulate into cumulative totals
+        self._cumulative_rewards[agent] = 0  # clear acting agent's slate first
+        for a, r in step_rewards.items():
+            if a in self.rewards:
+                self.rewards[a] = r
+                self._cumulative_rewards[a] += r
+
+        # 8. Rotate selector; remove terminated/truncated agents from live list
+        self.agent_selection = self._agent_selector.next()
+        self.agents = [a for a in self.agents
+                       if not (self.terminations[a] or self.truncations[a])]
 
     # ------------------------------------------------------------------
     # observe()
