@@ -1,7 +1,7 @@
 """
 RL-04: Frozen reward function for Byzantine Pursuit.
 
-⚠️  FROZEN AFTER TUE WEEK 1 SIGN-OFF ⚠️
+FROZEN AFTER TEAM SIGN-OFF 
 Do NOT modify reward constants after team agreement.
 Any change invalidates comparisons between experiments run before and after.
 
@@ -12,11 +12,16 @@ Reward components (all seekers; hider receives 0.0):
   CAPTURE_REWARD       +10.0   for the seeker that tagged the hider
   TEAM_CAPTURE_BONUS   + 5.0   split equally among ALL seekers on capture
   STEP_PENALTY         - 0.01  per step per agent (encourages fast capture)
-  DISTANCE_SHAPING     ± 0.1   per seeker per step:
-                                 +0.1 × reduction in Manhattan distance to hider
-                                 −0.1 × increase in Manhattan distance to hider
+  DISTANCE_SHAPING     ± 0.3   per seeker per step:
+                                 +0.3 × reduction in Manhattan distance to hider
+                                 −0.3 × increase in Manhattan distance to hider
 
-Paper citation: reward_version = "1.0.0"
+v1.0.0 → v2.0.0 change: DISTANCE_SHAPING raised 0.1 → 0.3.
+Reason: v1.0.0 made passive trapping (sit still, random hider walks in) more
+rewarding than active pursuit. v2.0.0 tips the balance toward chasing.
+All iPPO and MAPPO runs must use v2.0.0 for valid comparisons.
+
+Paper citation: reward_version = "2.0.0"
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from typing import Dict, Optional, Tuple
 # Frozen constants — cite these directly in §3.2 of the paper
 # ---------------------------------------------------------------------------
 
-reward_version: str = "1.0.0"
+reward_version: str = "2.0.0"
 
 CAPTURE_REWARD: float = 10.0
 """Individual reward for the seeker that occupies the hider's cell."""
@@ -40,11 +45,13 @@ STEP_PENALTY: float = -0.01
 """Per-step cost applied to every seeker. Penalises slow capture and
 prevents agents from idling to avoid negative distance-shaping signals."""
 
-DISTANCE_SHAPING: float = 0.1
+DISTANCE_SHAPING: float = 0.3
 """Coefficient for potential-based distance shaping per seeker.
 Reward = DISTANCE_SHAPING × (prev_manhattan − curr_manhattan).
 Positive when the seeker moves closer; negative when it moves away.
-Applied identically across iPPO, MAPPO, and all Byzantine conditions."""
+Applied identically across iPPO, MAPPO, and all Byzantine conditions.
+Raised from 0.1 (v1.0.0) to 0.3 (v2.0.0) to incentivise active pursuit
+over passive trapping against a random hider."""
 
 
 # ---------------------------------------------------------------------------
