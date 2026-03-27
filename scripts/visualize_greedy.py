@@ -217,8 +217,9 @@ def run(
     if save_mp4:
         import cv2
         p = Path(save_mp4)
-        out_path = p.with_name(f"{p.stem}_{run_id}{p.suffix}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_dir = p.parent / "greedy"
+        out_path = out_dir / f"greedy_{p.stem}_{run_id}{p.suffix}"
+        out_dir.mkdir(parents=True, exist_ok=True)
         fps = max(1, int(1.0 / delay))
         h, w = frames[0].shape[:2]
         writer = cv2.VideoWriter(
@@ -244,7 +245,7 @@ def run(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualise greedy pursuer on real maze")
-    parser.add_argument("--n_seekers",  type=int,   default=1)
+    parser.add_argument("--n_seekers",  type=int,   default=4)
     parser.add_argument("--grid_size",  type=int,   default=12)
     parser.add_argument("--max_steps",  type=int,   default=150)
     parser.add_argument("--seed",       type=int,   default=42)
