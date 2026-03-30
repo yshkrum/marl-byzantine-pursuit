@@ -58,7 +58,7 @@ import numpy.random
 # ---------------------------------------------------------------------------
 try:
     from pettingzoo import AECEnv
-    from pettingzoo.utils import agent_selector
+    from pettingzoo.utils.agent_selector import agent_selector
     import gymnasium.spaces as spaces
 except ImportError:  # pragma: no cover
     class AECEnv:  # type: ignore[no-redef]
