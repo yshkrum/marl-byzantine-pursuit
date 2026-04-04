@@ -158,6 +158,8 @@ class ByzantinePursuitEnv(AECEnv):
         max_steps: int = 500,
         seed: int = 42,
         fixed_maze: bool = False,
+        protocol: Any | None = None,
+        byzantine_agents: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
 
@@ -225,6 +227,12 @@ class ByzantinePursuitEnv(AECEnv):
         # Message buffer: seeker_id → (believed_hider_x, believed_hider_y)
         # Populated with sentinels at reset; Role C overwrites with real msgs.
         self._message_buffer: dict[str, tuple[float, float]] = {}
+
+        # BYZ-01/02: communication protocol and Byzantine agent registry.
+        # protocol=None → no communication (message slots stay sentinel).
+        # byzantine_agents maps seeker_id → ByzantineAgent for corrupt seekers.
+        self._protocol: Any | None = protocol
+        self._byzantine_agents: dict[str, Any] = byzantine_agents or {}
 
         # PettingZoo AEC bookkeeping dicts – populated in reset()
         self.rewards: dict[str, float] = {}
@@ -613,6 +621,10 @@ class ByzantinePursuitEnv(AECEnv):
             if s != "hider"
         }
 
+        # BYZ-01/02: reset any per-episode protocol state (e.g. reputation scores)
+        if self._protocol is not None:
+            self._protocol.reset()
+
         # Step 5: initial observations (ENV-03)
         observations: dict[str, np.ndarray] = {
             agent: self._get_observation(agent) for agent in self.agents
@@ -663,6 +675,24 @@ class ByzantinePursuitEnv(AECEnv):
         nr, nc = row + dr, col + dc
         if 0 <= nr < self.grid_size and 0 <= nc < self.grid_size and not self.grid[nr, nc]:
             self.positions[agent] = (nr, nc)
+
+        # 2b. BYZ-01/02: communication hook — update this seeker's message
+        #     buffer entry after movement so obs[2:4] reflects new position.
+        #     SilentByzantine → reset slot to sentinel; others → write buffer.
+        if agent.startswith("seeker_") and self._protocol is not None:
+            from comms.interface import EnvState
+            _state = EnvState(
+                obs=self._get_observation(agent),
+                step=self._step_count,
+                grid_size=self.grid_size,
+            )
+            _msg = self._protocol.send(agent, _state)
+            if agent in self._byzantine_agents:
+                _msg = self._byzantine_agents[agent].corrupt_message(_msg)
+            if _msg is None:
+                self._message_buffer[agent] = (_SENTINEL, _SENTINEL)
+            else:
+                self._message_buffer.update(self._protocol.receive([_msg]))
 
         # 3. Detect capture: any seeker occupies the hider's cell
         hider_pos = self.positions["hider"]
