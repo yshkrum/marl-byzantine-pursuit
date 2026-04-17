@@ -3,29 +3,39 @@
 # Ticket: EXP-04
 #
 # Research question: how does capture time degrade as Byzantine fraction increases?
-# Fix N=6 seekers, vary f, broadcast protocol, maze environment.
+# Fix N=8 seekers, vary f, broadcast protocol, maze environment.
+#
+# Config matches PettingZoo pursuit benchmark defaults (N=8, 16x16, obs_radius=7)
+# so results are directly comparable to the MARL pursuit literature.
+#
+# Byzantine fractions chosen so each step adds exactly 1 Byzantine agent:
+#   f=0.000 -> 0 Byzantine  (clean baseline)
+#   f=0.125 -> 1 Byzantine
+#   f=0.250 -> 2 Byzantine
+#   f=0.375 -> 3 Byzantine
+#   f=0.500 -> 4 Byzantine  (worst case, majority honest preserved)
 
 experiment:
   name: exp1_byzantine_degradation
-  description: "Capture time vs Byzantine fraction, N=6, broadcast protocol"
+  description: "Capture time vs Byzantine fraction, N=8, broadcast protocol"
 
 env:
-  grid_size: 20
-  n_seekers: 6
-  obs_radius: 5
-  obstacle_density: 0.25
+  grid_size: 16
+  n_seekers: 8
+  obs_radius: 7
+  obstacle_density: 0.15
   max_steps: 500
 
 training:
   algorithm: mappo
-  n_episodes: 300
+  n_episodes: 500
   n_seeds: 5
 
 comms:
   protocol: broadcast
 
 sweep:
-  byzantine_fraction: [0.0, 0.17, 0.33, 0.5]
+  byzantine_fraction: [0.0, 0.125, 0.25, 0.375, 0.5]
 
 logging:
   metrics:

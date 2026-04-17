@@ -2,27 +2,31 @@
 # Owner: D (Experiment Runner)
 # Ticket: EXP-04
 #
-# Research question: which protocol best recovers performance at f=0.33?
-# Fix f=0.33, vary protocol, N=6, maze environment.
+# Research question: which protocol best recovers performance at f=0.25 (2/8 Byzantine)?
+# Fix f=0.25, vary protocol, N=8, maze environment.
+#
+# f=0.25 chosen (not 0.33) because with N=8 it gives exactly 2 Byzantine agents —
+# a clean condition. f=0.33 with N=8 would also give 2 (floor(8*0.33)=2), so
+# 0.25 is the canonical label.
 
 experiment:
   name: exp2_protocol_comparison
-  description: "Protocol comparison at f=0.33 (1/3 Byzantine)"
+  description: "Protocol comparison at f=0.25 (2/8 Byzantine)"
 
 env:
-  grid_size: 20
-  n_seekers: 6
-  obs_radius: 5
-  obstacle_density: 0.25
+  grid_size: 16
+  n_seekers: 8
+  obs_radius: 7
+  obstacle_density: 0.15
   max_steps: 500
 
 training:
   algorithm: mappo
-  n_episodes: 300
+  n_episodes: 500
   n_seeds: 5
 
 sweep:
-  byzantine_fraction: [0.33]
+  byzantine_fraction: [0.25]
   protocol: [none, broadcast, gossip, trimmed_mean, reputation]
 
 logging:

@@ -80,13 +80,13 @@ class _AgentRollout:
     obs: List[np.ndarray] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
-    dones: List[bool] = field(default_factory=list)
+    terminals: List[bool] = field(default_factory=list)  # True only on capture, NOT on timeout
     values: List[float] = field(default_factory=list)
     log_probs: List[float] = field(default_factory=list)
 
     def clear(self) -> None:
         for lst in (self.obs, self.actions, self.rewards,
-                    self.dones, self.values, self.log_probs):
+                    self.terminals, self.values, self.log_probs):
             lst.clear()
 
     def __len__(self) -> int:
@@ -117,14 +117,22 @@ def _zero_message_slots(obs: np.ndarray, n_seekers: int) -> np.ndarray:
 def _compute_gae(
     rewards: List[float],
     values: List[float],
-    dones: List[bool],
+    terminals: List[bool],
+    bootstrap_value: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute Generalised Advantage Estimation and discounted returns.
 
     Parameters
     ----------
-    rewards, values, dones:
+    rewards, values, terminals:
         Per-step lists of length T from one episode.
+        ``terminals[t]`` is True only for genuine capture (termination), NOT
+        for timeout truncation. This prevents GAE from zeroing out the value
+        bootstrap at the end of truncated episodes.
+    bootstrap_value:
+        V(s_T) estimated by the critic after the episode ends. Used as the
+        final-step bootstrap for truncated (timeout) episodes. Pass 0.0 for
+        terminal (capture) episodes where the task is genuinely over.
 
     Returns
     -------
@@ -136,8 +144,8 @@ def _compute_gae(
     last_adv: float = 0.0
 
     for t in reversed(range(n)):
-        non_terminal = 1.0 - float(dones[t])
-        next_val = values[t + 1] if t + 1 < n else 0.0
+        non_terminal = 1.0 - float(terminals[t])
+        next_val = values[t + 1] if t + 1 < n else bootstrap_value
         delta = rewards[t] + GAMMA * next_val * non_terminal - values[t]
         last_adv = delta + GAMMA * GAE_LAMBDA * non_terminal * last_adv
         advantages[t] = last_adv
@@ -150,19 +158,28 @@ def _compute_gae(
 # PPO mini-batch update
 # ---------------------------------------------------------------------------
 
-def _ppo_update(ppo: PPO, rollout: _AgentRollout) -> None:
+def _ppo_update(ppo: PPO, rollout: _AgentRollout, bootstrap_value: float = 0.0) -> None:
     """Run N_EPOCHS mini-batch PPO updates from *rollout*.
 
     Uses the SB3 policy's existing Adam optimiser and
     ``evaluate_actions()`` to recompute log-probs under the updated policy.
     Clipped PPO objective + value loss + entropy bonus, matching SB3 defaults.
+
+    Parameters
+    ----------
+    bootstrap_value:
+        V(s_T) for the final step — non-zero for truncated (timeout) episodes.
+        Prevents underestimating returns when episodes end by timeout.
     """
     if len(rollout) == 0:
         return
 
-    advantages, returns = _compute_gae(rollout.rewards, rollout.values, rollout.dones)
-    # Normalise advantages within this episode
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    # Advantage normalisation is deferred to each mini-batch (consistent with
+    # MAPPO's per-mini-batch normalisation; keeps gradient scale stable when
+    # episode length varies between captured and timeout episodes).
+    advantages, returns = _compute_gae(
+        rollout.rewards, rollout.values, rollout.terminals, bootstrap_value
+    )
 
     obs_arr = np.array(rollout.obs, dtype=np.float32)           # (T, obs_dim)
     act_arr = np.array(rollout.actions, dtype=np.int64)          # (T,)
@@ -190,6 +207,9 @@ def _ppo_update(ppo: PPO, rollout: _AgentRollout) -> None:
             # PPO clipped surrogate loss
             ratio = torch.exp(log_probs_t - old_lp_t[idx])
             adv_b = adv_t[idx]
+            # Per-mini-batch advantage normalisation (consistent with MAPPO)
+            if adv_b.numel() > 1:
+                adv_b = (adv_b - adv_b.mean()) / (adv_b.std() + 1e-8)
             pg_loss = torch.max(
                 -adv_b * ratio,
                 -adv_b * torch.clamp(ratio, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE),
@@ -242,6 +262,7 @@ def train(
     n_episodes: int,
     seed: int,
     logger: EpisodeLogger,
+    run_tag: str = "",
 ) -> Dict[str, PPO]:
     """Train one independent PPO policy per seeker agent.
 
@@ -284,6 +305,7 @@ def train(
 
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
+    np.random.seed(seed)  # makes np.random.shuffle in _ppo_update deterministic
 
     seeker_ids: List[str] = [
         a for a in env.possible_agents if a.startswith("seeker_")
@@ -291,7 +313,8 @@ def train(
     n_seekers = len(seeker_ids)
     _obs_dim: int = OBS_DIM(n_seekers, env.grid_size, env.obs_radius)
 
-    checkpoint_root = Path(f"checkpoints/ippo_seed{seed}")
+    _tag = f"_{run_tag}" if run_tag else ""
+    checkpoint_root = Path(f"checkpoints/ippo{_tag}_seed{seed}")
     checkpoint_root.mkdir(parents=True, exist_ok=True)
 
     # Convert AEC → parallel for simultaneous rollout collection
@@ -345,8 +368,13 @@ def train(
                 obs_t = obs_as_tensor(obs_clean[np.newaxis], policies[agent_id].device)
 
                 with torch.no_grad():
-                    action_t, value_t, log_prob_t = policies[agent_id].policy.forward(obs_t)
+                    # Single actor pass via get_distribution, separate critic pass via
+                    # predict_values — avoids the redundant second actor forward that
+                    # policy.forward() + get_distribution() would otherwise cause.
                     dist = policies[agent_id].policy.get_distribution(obs_t)
+                    action_t = dist.distribution.sample()
+                    log_prob_t = dist.log_prob(action_t)
+                    value_t = policies[agent_id].policy.predict_values(obs_t)
                     entropy = float(dist.entropy().mean().cpu().item())
 
                 action = int(action_t.cpu().numpy()[0])
@@ -367,15 +395,15 @@ def train(
 
             next_obs_dict, reward_dict, term_dict, trunc_dict, _ = parallel_env.step(actions)
 
-            # Record per-step rewards and terminal signals for seekers
+            # Record per-step rewards and terminal signals for seekers.
+            # Store term_dict only (not trunc) so GAE does not cut off the value
+            # bootstrap at timeout steps — truncation is handled via bootstrap_value.
             for agent_id in seeker_ids:
                 if agent_id not in actions:
                     continue
                 r = float(reward_dict.get(agent_id, 0.0))
-                done = (term_dict.get(agent_id, False)
-                        or trunc_dict.get(agent_id, False))
                 rollouts[agent_id].rewards.append(r)
-                rollouts[agent_id].dones.append(done)
+                rollouts[agent_id].terminals.append(term_dict.get(agent_id, False))
                 cumulative_rewards[agent_id] += r
 
             episode_steps += 1
@@ -386,10 +414,30 @@ def train(
                 capture_success = True
 
         # ----------------------------------------------------------------
+        # Bootstrap values for truncated (timeout) episodes.
+        # After the parallel_env loop exits, obs_dict holds the final
+        # next_obs from PettingZoo, which is s_T for truncated episodes.
+        # Running each agent's local critic on s_T gives V(s_T) — the
+        # correct GAE bootstrap. Capture episodes use 0.0 (default).
+        # ----------------------------------------------------------------
+        bootstrap_vals: Dict[str, float] = {s: 0.0 for s in seeker_ids}
+        if not capture_success:
+            for agent_id in seeker_ids:
+                if len(rollouts[agent_id]) == 0:
+                    continue
+                raw = obs_dict.get(agent_id, np.zeros(_obs_dim, dtype=np.float32))
+                final_obs = _zero_message_slots(raw, n_seekers)
+                obs_t = obs_as_tensor(final_obs[np.newaxis], policies[agent_id].device)
+                with torch.no_grad():
+                    bootstrap_vals[agent_id] = float(
+                        policies[agent_id].policy.predict_values(obs_t).cpu().numpy().flatten()[0]
+                    )
+
+        # ----------------------------------------------------------------
         # Independent PPO updates — one per seeker from its own trajectory
         # ----------------------------------------------------------------
         for agent_id in seeker_ids:
-            _ppo_update(policies[agent_id], rollouts[agent_id])
+            _ppo_update(policies[agent_id], rollouts[agent_id], bootstrap_vals[agent_id])
             rollouts[agent_id].clear()
 
         # ----------------------------------------------------------------
