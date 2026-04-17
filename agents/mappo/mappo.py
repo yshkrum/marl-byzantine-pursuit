@@ -19,10 +19,10 @@ Frozen hyperparameters (must match iPPO exactly so comparisons are valid):
   LR=3e-4, ε=0.2, λ_GAE=0.95, H=0.01, γ=0.99, 2×64 ReLU MLP.
 
 Training config (canonical — do not change):
-  n_seekers=4, grid_size=10, obstacle_density=0.15, obs_radius=None,
-  max_steps=150, seeds [42,43,44], n_episodes=1000.
+  n_seekers=8, grid_size=16, obs_radius=7, obstacle_density=0.15,
+  max_steps=500, seeds [42,43,44], n_episodes=1000.
 
-Target: >70% capture rate, mean capture time ≤10 steps (beats iPPO 59.5%).
+Target: match or exceed iPPO 65.9% capture rate; faster mean capture time via comms.
 
 Dependencies
 ------------
@@ -116,14 +116,21 @@ class _CentralisedCritic(nn.Module):
     Input : (B, n_seekers * obs_dim) — concatenated raw obs of all seekers
             in sorted agent-ID order. Never include the hider's observation.
     Output: (B,) — scalar state value V(global_obs)
+
+    Architecture scales with global_obs_dim to avoid severe input bottleneck.
+    With N=8, obs_dim=243: global_obs_dim=1944. A single 1944→64 layer loses
+    30× more information per unit than the actor's 243→64 layer, preventing
+    the critic from learning a useful global value function. Instead we use
+    a wider first layer (256) to give the critic adequate representational
+    capacity before compressing to the final scalar.
     """
 
     def __init__(self, global_obs_dim: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(global_obs_dim, 64), nn.ReLU(),
-            nn.Linear(64, 64),             nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(global_obs_dim, 256), nn.ReLU(),
+            nn.Linear(256, 128),            nn.ReLU(),
+            nn.Linear(128, 1),
         )
 
     def forward(self, global_obs: torch.Tensor) -> torch.Tensor:
@@ -141,13 +148,13 @@ class _AgentRollout:
     obs: List[np.ndarray] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
-    dones: List[bool] = field(default_factory=list)
+    terminals: List[bool] = field(default_factory=list)  # True only on capture, NOT on timeout
     values: List[float] = field(default_factory=list)   # V(global_obs) from centralised critic
     log_probs: List[float] = field(default_factory=list)
 
     def clear(self) -> None:
         for lst in (self.obs, self.actions, self.rewards,
-                    self.dones, self.values, self.log_probs):
+                    self.terminals, self.values, self.log_probs):
             lst.clear()
 
     def __len__(self) -> int:
@@ -177,16 +184,22 @@ def _zero_message_slots(obs: np.ndarray, n_seekers: int) -> np.ndarray:
 def _compute_gae(
     rewards: List[float],
     values: List[float],
-    dones: List[bool],
+    terminals: List[bool],
+    bootstrap_value: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute Generalised Advantage Estimation and discounted returns.
 
     Parameters
     ----------
-    rewards, values, dones:
+    rewards, values, terminals:
         Per-step lists of length T from one episode.
         ``values[t]`` is V(global_obs[t]) from the centralised critic —
         all seekers share the same value estimate at each step.
+        ``terminals[t]`` is True only for genuine capture, NOT timeout, so
+        GAE does not incorrectly cut off the bootstrap at truncated episodes.
+    bootstrap_value:
+        V(s_T) from the centralised critic after the episode ends. Non-zero
+        for truncated (timeout) episodes; 0.0 for capture (terminal) episodes.
 
     Returns
     -------
@@ -198,8 +211,8 @@ def _compute_gae(
     last_adv: float = 0.0
 
     for t in reversed(range(n)):
-        non_terminal = 1.0 - float(dones[t])
-        next_val = values[t + 1] if t + 1 < n else 0.0
+        non_terminal = 1.0 - float(terminals[t])
+        next_val = values[t + 1] if t + 1 < n else bootstrap_value
         delta = rewards[t] + GAMMA * next_val * non_terminal - values[t]
         last_adv = delta + GAMMA * GAE_LAMBDA * non_terminal * last_adv
         advantages[t] = last_adv
@@ -221,6 +234,7 @@ def _mappo_update(
     critic_optim: torch.optim.Adam,
     sorted_seeker_ids: List[str],
     device: torch.device,
+    bootstrap_value: float = 0.0,
 ) -> None:
     """Run N_EPOCHS mini-batch PPO updates on the shared actor and centralised critic.
 
@@ -253,7 +267,7 @@ def _mappo_update(
         r = rollouts[sid]
         if len(r) == 0:
             continue
-        adv, ret = _compute_gae(r.rewards, r.values, r.dones)
+        adv, ret = _compute_gae(r.rewards, r.values, r.terminals, bootstrap_value)
         all_obs.extend(r.obs)
         all_actions.extend(r.actions)
         all_old_lp.extend(r.log_probs)
@@ -337,6 +351,7 @@ def train(
     n_episodes: int,
     seed: int,
     logger: EpisodeLogger,
+    run_tag: str = "",
 ) -> Tuple[_SharedActor, _CentralisedCritic]:
     """Train MAPPO: shared actor + centralised critic via CTDE.
 
@@ -379,6 +394,7 @@ def train(
 
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
+    np.random.seed(seed)  # makes np.random.shuffle in _mappo_update deterministic
     device = torch.device("cpu")
 
     # Sorted seeker IDs — order must be fixed and consistent across every call
@@ -402,10 +418,20 @@ def train(
     critic_optim = torch.optim.Adam(critic.parameters(), lr=LR)
 
     # --- Step 7: checkpoint directory ---------------------------------------
-    checkpoint_root = Path(f"checkpoints/mappo_seed{seed}")
+    _tag = f"_{run_tag}" if run_tag else ""
+    checkpoint_root = Path(f"checkpoints/mappo{_tag}_seed{seed}")
     checkpoint_root.mkdir(parents=True, exist_ok=True)
 
     parallel_env = aec_to_parallel(env)
+
+    # Zero message slots only when there is no honest protocol, or when Byzantine
+    # agents are present (corrupted messages should not reach the actor).
+    # With an honest broadcast protocol at f=0.0 the actor should read real peer
+    # messages — zeroing them would negate the entire CTDE communications advantage.
+    _use_comms = (
+        getattr(env, "_protocol", None) is not None
+        and env.byzantine_fraction == 0.0
+    )
 
     rollouts: Dict[str, _AgentRollout] = {s: _AgentRollout() for s in sorted_seeker_ids}
     recent_successes: List[bool] = []
@@ -444,12 +470,17 @@ def train(
                 )
                 step_value = float(critic(glob_t).cpu().item())
 
-            # --- Shared actor: each seeker uses its own zeroed local obs -----
+            # --- Shared actor: pass real messages when protocol is honest,
+            #     zero slots when no protocol or Byzantine agents are present ---
             for agent_id in sorted_seeker_ids:
                 if agent_id not in parallel_env.agents:
                     continue
 
-                obs_clean = _zero_message_slots(obs_dict[agent_id], n_seekers)
+                obs_clean = (
+                    obs_dict[agent_id]
+                    if _use_comms
+                    else _zero_message_slots(obs_dict[agent_id], n_seekers)
+                )
                 obs_t = torch.tensor(
                     obs_clean[np.newaxis], dtype=torch.float32, device=device
                 )
@@ -461,7 +492,7 @@ def train(
                 action   = int(action_t.cpu().item())
                 log_prob = float(log_prob_t.cpu().item())
 
-                rollouts[agent_id].obs.append(obs_clean)
+                rollouts[agent_id].obs.append(obs_clean.copy())
                 rollouts[agent_id].actions.append(action)
                 rollouts[agent_id].values.append(step_value)   # shared V(global_obs)
                 rollouts[agent_id].log_probs.append(log_prob)
@@ -475,14 +506,14 @@ def train(
 
             next_obs_dict, reward_dict, term_dict, trunc_dict, _ = parallel_env.step(actions)
 
+            # Store term_dict only (not trunc) so GAE does not cut off the value
+            # bootstrap at timeout steps — truncation handled via bootstrap_value.
             for agent_id in sorted_seeker_ids:
                 if agent_id not in actions:
                     continue
                 r_val = float(reward_dict.get(agent_id, 0.0))
-                done  = (term_dict.get(agent_id, False)
-                         or trunc_dict.get(agent_id, False))
                 rollouts[agent_id].rewards.append(r_val)
-                rollouts[agent_id].dones.append(done)
+                rollouts[agent_id].terminals.append(term_dict.get(agent_id, False))
 
             episode_steps += 1
             obs_dict = next_obs_dict
@@ -492,6 +523,25 @@ def train(
                 capture_success = True
 
         # ----------------------------------------------------------------
+        # Bootstrap value for truncated (timeout) episodes.
+        # After the parallel_env loop exits, obs_dict holds the final
+        # next_obs from PettingZoo — s_T for truncated episodes.
+        # The centralised critic on the concatenated final obs gives V(s_T).
+        # All seekers share the same bootstrap (centralised critic).
+        # ----------------------------------------------------------------
+        bootstrap_value = 0.0
+        if not capture_success:
+            final_global = np.concatenate([
+                obs_dict.get(sid, np.zeros(obs_dim, dtype=np.float32))
+                for sid in sorted_seeker_ids
+            ])
+            with torch.no_grad():
+                final_glob_t = torch.tensor(
+                    final_global[np.newaxis], dtype=torch.float32, device=device
+                )
+                bootstrap_value = float(critic(final_glob_t).cpu().item())
+
+        # ----------------------------------------------------------------
         # MAPPO update — shared actor + centralised critic
         # ----------------------------------------------------------------
         _mappo_update(
@@ -499,6 +549,7 @@ def train(
             rollouts, global_obs_list,
             actor_optim, critic_optim,
             sorted_seeker_ids, device,
+            bootstrap_value=bootstrap_value,
         )
 
         # ----------------------------------------------------------------
