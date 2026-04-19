@@ -22,6 +22,9 @@ import pytest
 from env.schema import Message, SENTINEL, OBS_DIM
 from comms.interface import BaseProtocol, ByzantineAgent, EnvState, NoneProtocol
 from comms.broadcast import BroadcastProtocol
+from comms.gossip import GossipProtocol
+from comms.trimmed_mean import TrimmedMeanProtocol
+from comms.reputation import ReputationProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -537,3 +540,450 @@ class TestBroadcastEnvIntegration:
             f"Expected all {n_seekers} buffer entries populated, "
             f"got {non_sentinel_count}"
         )
+
+
+# ---------------------------------------------------------------------------
+# GossipProtocol unit tests (BYZ-06)
+# ---------------------------------------------------------------------------
+
+def _make_messages(n: int, hider_x: float = 0.5, hider_y: float = 0.5) -> list[Message]:
+    return [
+        Message(sender_id=f"seeker_{i}", believed_hider_x=hider_x,
+                believed_hider_y=hider_y, step=0)
+        for i in range(n)
+    ]
+
+
+class TestGossipProtocol:
+    """Unit tests for comms/gossip.py GossipProtocol (BYZ-06)."""
+
+    # --- send() is identical to BroadcastProtocol ---
+
+    def test_send_visible_hider(self):
+        proto = GossipProtocol(fanout=2, seed=0)
+        obs = _make_obs(hider_x=0.4, hider_y=0.6)
+        msg = proto.send("seeker_0", EnvState(obs=obs, step=3, grid_size=10))
+        assert isinstance(msg, Message)
+        assert msg.sender_id == "seeker_0"
+        assert msg.believed_hider_x == pytest.approx(0.4)
+        assert msg.believed_hider_y == pytest.approx(0.6)
+
+    def test_send_occluded_hider_yields_none_fields(self):
+        proto = GossipProtocol(fanout=2, seed=0)
+        obs = _make_obs(hider_x=SENTINEL, hider_y=SENTINEL)
+        msg = proto.send("seeker_1", EnvState(obs=obs, step=0, grid_size=10))
+        assert msg.believed_hider_x is None
+        assert msg.believed_hider_y is None
+
+    # --- receive(): fanout controls how many messages are kept ---
+
+    def test_fanout_one_keeps_exactly_one_message(self):
+        proto = GossipProtocol(fanout=1, seed=0)
+        msgs = _make_messages(4)
+        buf = proto.receive(msgs)
+        assert len(buf) == 1
+
+    def test_fanout_n_minus_one_keeps_all_messages(self):
+        """fanout = N-1 is equivalent to broadcast — all messages delivered."""
+        n = 4
+        proto = GossipProtocol(fanout=n - 1, seed=0)
+        msgs = _make_messages(n)
+        buf = proto.receive(msgs)
+        assert len(buf) == n - 1
+
+    def test_fanout_exceeds_pool_keeps_all_valid(self):
+        """When fanout > available messages, all valid messages are kept."""
+        proto = GossipProtocol(fanout=10, seed=0)
+        msgs = _make_messages(3)
+        buf = proto.receive(msgs)
+        assert len(buf) == 3
+
+    def test_fanout_zero_returns_empty_buffer(self):
+        proto = GossipProtocol(fanout=0, seed=0)
+        msgs = _make_messages(4)
+        buf = proto.receive(msgs)
+        assert buf == {}
+
+    def test_none_messages_excluded_from_pool(self):
+        """None (SilentByzantine) entries are removed before sampling."""
+        proto = GossipProtocol(fanout=2, seed=0)
+        msgs = [
+            Message("seeker_0", 0.5, 0.5, step=0),
+            None,
+            Message("seeker_2", 0.3, 0.7, step=0),
+            None,
+        ]
+        buf = proto.receive(msgs)
+        # Only 2 valid messages → fanout=2 keeps both
+        assert len(buf) == 2
+        assert "seeker_0" in buf
+        assert "seeker_2" in buf
+
+    def test_all_none_returns_empty_buffer(self):
+        proto = GossipProtocol(fanout=2, seed=0)
+        buf = proto.receive([None, None, None])
+        assert buf == {}
+
+    def test_none_position_fields_become_sentinel(self):
+        """Messages with None coords (hider not visible) → sentinel in buffer."""
+        proto = GossipProtocol(fanout=1, seed=0)
+        msgs = [Message("seeker_0", None, None, step=0)]
+        buf = proto.receive(msgs)
+        assert buf["seeker_0"] == (SENTINEL, SENTINEL)
+
+    def test_seed_reproducibility(self):
+        """Same seed → same fanout selection across two identical calls."""
+        msgs = _make_messages(8)
+        buf1 = GossipProtocol(fanout=3, seed=42).receive(msgs)
+        buf2 = GossipProtocol(fanout=3, seed=42).receive(msgs)
+        assert set(buf1.keys()) == set(buf2.keys())
+
+    def test_different_seeds_may_differ(self):
+        """Different seeds should (almost always) produce different selections."""
+        msgs = _make_messages(8)
+        results = set()
+        for seed in range(20):
+            buf = GossipProtocol(fanout=3, seed=seed).receive(msgs)
+            results.add(frozenset(buf.keys()))
+        # With 8 agents and fanout=3 there are C(8,3)=56 possibilities;
+        # 20 different seeds should hit at least 2 distinct subsets.
+        assert len(results) > 1
+
+    def test_reset_restores_determinism(self):
+        """After reset(), the same random sequence is replayed."""
+        proto = GossipProtocol(fanout=3, seed=7)
+        msgs = _make_messages(8)
+        first_run = proto.receive(msgs)
+        proto.reset()
+        second_run = proto.receive(msgs)
+        assert set(first_run.keys()) == set(second_run.keys())
+
+    def test_invalid_fanout_raises(self):
+        with pytest.raises(ValueError):
+            GossipProtocol(fanout=-1)
+
+
+# ---------------------------------------------------------------------------
+# TrimmedMeanProtocol unit tests (BYZ-07)
+# ---------------------------------------------------------------------------
+
+class TestTrimmedMeanProtocol:
+    """Unit tests for comms/trimmed_mean.py TrimmedMeanProtocol (BYZ-07)."""
+
+    # --- send() is identical to BroadcastProtocol ---
+
+    def test_send_visible_hider(self):
+        proto = TrimmedMeanProtocol()
+        obs = _make_obs(hider_x=0.4, hider_y=0.6)
+        msg = proto.send("seeker_0", EnvState(obs=obs, step=1, grid_size=10))
+        assert isinstance(msg, Message)
+        assert msg.believed_hider_x == pytest.approx(0.4)
+        assert msg.believed_hider_y == pytest.approx(0.6)
+
+    def test_send_occluded_hider_yields_none_fields(self):
+        proto = TrimmedMeanProtocol()
+        obs = _make_obs(hider_x=SENTINEL, hider_y=SENTINEL)
+        msg = proto.send("seeker_0", EnvState(obs=obs, step=0, grid_size=10))
+        assert msg.believed_hider_x is None
+        assert msg.believed_hider_y is None
+
+    # --- receive(): trimmed-mean aggregation ---
+
+    def test_outlier_trimmed_one_byzantine_vs_three_honest(self):
+        """
+        3 honest agents report (0.5, 0.5); 1 Byzantine reports (0.0, 0.0).
+        With trim_fraction=0.25 (trim 1 of 4 from each end), the Byzantine
+        outlier is discarded and the consensus should be close to 0.5.
+        """
+        proto = TrimmedMeanProtocol(trim_fraction=0.25)
+        msgs = [
+            Message("seeker_0", 0.5, 0.5, step=0),  # honest
+            Message("seeker_1", 0.5, 0.5, step=0),  # honest
+            Message("seeker_2", 0.5, 0.5, step=0),  # honest
+            Message("seeker_3", 0.0, 0.0, step=0),  # byzantine outlier
+        ]
+        buf = proto.receive(msgs)
+        cx, cy = next(iter(buf.values()))
+        assert cx == pytest.approx(0.5, abs=1e-6)
+        assert cy == pytest.approx(0.5, abs=1e-6)
+
+    def test_consensus_written_under_all_senders(self):
+        """Every active sender's ID maps to the same consensus value."""
+        proto = TrimmedMeanProtocol(trim_fraction=0.2)
+        msgs = _make_messages(4, hider_x=0.5, hider_y=0.5)
+        buf = proto.receive(msgs)
+        assert len(buf) == 4
+        values = list(buf.values())
+        for v in values[1:]:
+            assert v == pytest.approx(values[0])
+
+    def test_trim_fraction_zero_is_plain_mean(self):
+        """trim_fraction=0.0 → no trimming, result equals the simple mean."""
+        proto = TrimmedMeanProtocol(trim_fraction=0.0)
+        msgs = [
+            Message("s0", 0.2, 0.4, step=0),
+            Message("s1", 0.6, 0.8, step=0),
+            Message("s2", 0.4, 0.6, step=0),
+        ]
+        buf = proto.receive(msgs)
+        cx, cy = buf["s0"]
+        assert cx == pytest.approx((0.2 + 0.6 + 0.4) / 3)
+        assert cy == pytest.approx((0.4 + 0.8 + 0.6) / 3)
+
+    def test_trim_fraction_half_is_approx_median(self):
+        """trim_fraction=0.49 with 5 values keeps only the middle value."""
+        proto = TrimmedMeanProtocol(trim_fraction=0.49)
+        # x values: 0.1, 0.2, 0.5, 0.8, 0.9 → k=floor(5*0.49)=2 → keep [0.5]
+        msgs = [
+            Message(f"s{i}", x, 0.5, step=0)
+            for i, x in enumerate([0.1, 0.2, 0.5, 0.8, 0.9])
+        ]
+        buf = proto.receive(msgs)
+        cx, _ = buf["s0"]
+        assert cx == pytest.approx(0.5, abs=1e-6)
+
+    def test_fewer_than_three_messages_uses_simple_mean(self):
+        """Fallback: <3 valid messages → simple mean, no trimming."""
+        proto = TrimmedMeanProtocol(trim_fraction=0.4)
+        msgs = [
+            Message("s0", 0.2, 0.6, step=0),
+            Message("s1", 0.8, 0.4, step=0),
+        ]
+        buf = proto.receive(msgs)
+        cx, cy = buf["s0"]
+        assert cx == pytest.approx(0.5)
+        assert cy == pytest.approx(0.5)
+
+    def test_single_message_returns_that_value(self):
+        proto = TrimmedMeanProtocol()
+        msgs = [Message("s0", 0.3, 0.7, step=0)]
+        buf = proto.receive(msgs)
+        assert buf["s0"] == pytest.approx((0.3, 0.7))
+
+    def test_all_none_returns_empty(self):
+        proto = TrimmedMeanProtocol()
+        buf = proto.receive([None, None])
+        assert buf == {}
+
+    def test_none_messages_excluded_from_aggregation(self):
+        """None (SilentByzantine) entries do not count toward the mean."""
+        proto = TrimmedMeanProtocol(trim_fraction=0.0)
+        msgs = [
+            Message("s0", 0.4, 0.4, step=0),
+            None,
+            Message("s2", 0.6, 0.6, step=0),
+        ]
+        buf = proto.receive(msgs)
+        # Only s0 and s2 in buffer; mean = 0.5
+        assert len(buf) == 2
+        cx, cy = buf["s0"]
+        assert cx == pytest.approx(0.5)
+
+    def test_all_sentinel_coordinates_return_sentinel(self):
+        """Messages where hider is not visible (None coords) → SENTINEL consensus."""
+        proto = TrimmedMeanProtocol()
+        msgs = [
+            Message("s0", None, None, step=0),
+            Message("s1", None, None, step=0),
+            Message("s2", None, None, step=0),
+        ]
+        buf = proto.receive(msgs)
+        for sender_id, (cx, cy) in buf.items():
+            assert cx == SENTINEL
+            assert cy == SENTINEL
+
+    def test_invalid_trim_fraction_raises(self):
+        with pytest.raises(ValueError):
+            TrimmedMeanProtocol(trim_fraction=-0.1)
+        with pytest.raises(ValueError):
+            TrimmedMeanProtocol(trim_fraction=0.5)
+
+    def test_reset_is_noop(self):
+        """TrimmedMeanProtocol is stateless — reset() must not raise."""
+        TrimmedMeanProtocol().reset()
+
+
+# ---------------------------------------------------------------------------
+# ReputationProtocol unit tests (BYZ-08)
+# ---------------------------------------------------------------------------
+
+class TestReputationProtocol:
+    """Unit tests for comms/reputation.py ReputationProtocol (BYZ-08)."""
+
+    # --- send() is identical to BroadcastProtocol ---
+
+    def test_send_visible_hider(self):
+        proto = ReputationProtocol()
+        obs = _make_obs(hider_x=0.4, hider_y=0.6)
+        msg = proto.send("seeker_0", EnvState(obs=obs, step=1, grid_size=10))
+        assert isinstance(msg, Message)
+        assert msg.believed_hider_x == pytest.approx(0.4)
+        assert msg.believed_hider_y == pytest.approx(0.6)
+
+    # --- all agents start trusted ---
+
+    def test_all_agents_start_trusted(self):
+        """New senders are registered at trust 1.0 on first contact."""
+        proto = ReputationProtocol(min_trust=0.3)
+        msgs = _make_messages(4)
+        proto.receive(msgs)
+        for score in proto.trust_scores.values():
+            assert score >= 0.9  # started at 1.0, consistent → incremented or unchanged
+
+    # --- reputation decays for noisy senders ---
+
+    def test_reputation_decays_for_consistent_noise(self):
+        """
+        A Byzantine sender always reports (0.0, 0.0) while honest agents
+        report (0.5, 0.5).  After enough steps the Byzantine sender's trust
+        should have decreased below the starting value.
+
+        With 3 honest vs 1 Byzantine and deviation_threshold=0.2:
+          consensus ≈ 0.375; honest deviation ≈ 0.177 < 0.2 (increment);
+          Byzantine deviation ≈ 0.530 > 0.2 (decrement). Scores diverge.
+        """
+        proto = ReputationProtocol(
+            min_trust=0.3, deviation_threshold=0.2, trust_decrement=0.1
+        )
+        honest_pos = (0.5, 0.5)
+        byz_pos = (0.0, 0.0)
+
+        for _ in range(5):
+            msgs = [
+                Message("honest_0", *honest_pos, step=0),
+                Message("honest_1", *honest_pos, step=0),
+                Message("honest_2", *honest_pos, step=0),
+                Message("byz_0", *byz_pos, step=0),
+            ]
+            proto.receive(msgs)
+
+        assert proto.trust_scores["byz_0"] < proto.trust_scores["honest_0"]
+
+    # --- reputation recovers for honest agents ---
+
+    def test_reputation_recovers_for_honest_agents(self):
+        """
+        After penalising an agent for one noisy step, it should recover
+        when it subsequently reports consistent positions.
+        """
+        proto = ReputationProtocol(
+            min_trust=0.1, deviation_threshold=0.1,
+            trust_increment=0.1, trust_decrement=0.2
+        )
+        # Step 1: agent reports noise — penalised
+        msgs = [
+            Message("s0", 0.5, 0.5, step=0),
+            Message("s1", 0.5, 0.5, step=0),
+            Message("s2", 0.0, 0.0, step=0),  # noisy
+        ]
+        proto.receive(msgs)
+        score_after_penalty = proto.trust_scores["s2"]
+
+        # Steps 2–5: s2 now reports honestly
+        for step in range(1, 6):
+            msgs = [
+                Message("s0", 0.5, 0.5, step=step),
+                Message("s1", 0.5, 0.5, step=step),
+                Message("s2", 0.5, 0.5, step=step),
+            ]
+            proto.receive(msgs)
+
+        assert proto.trust_scores["s2"] > score_after_penalty
+
+    # --- complete isolation when trust reaches zero ---
+
+    def test_isolated_sender_absent_from_buffer(self):
+        """
+        A sender whose score drops below min_trust is excluded from the
+        returned buffer.
+
+        3 honest vs 1 Byzantine with deviation_threshold=0.3 ensures honest
+        agents (deviation ≈ 0.177) are rewarded while the Byzantine
+        (deviation ≈ 0.530) is penalised until it falls below min_trust=0.5.
+        """
+        proto = ReputationProtocol(
+            min_trust=0.5, deviation_threshold=0.3,
+            trust_decrement=0.2
+        )
+        # Drive the Byzantine agent's score below min_trust
+        for step in range(6):
+            msgs = [
+                Message("honest_0", 0.5, 0.5, step=step),
+                Message("honest_1", 0.5, 0.5, step=step),
+                Message("honest_2", 0.5, 0.5, step=step),
+                Message("byz",      0.0, 0.0, step=step),
+            ]
+            proto.receive(msgs)
+
+        # By now byz score should be below 0.5
+        assert proto.trust_scores["byz"] < 0.5
+
+        # Final receive: byz should not appear in the buffer
+        final_msgs = [
+            Message("honest_0", 0.5, 0.5, step=6),
+            Message("honest_1", 0.5, 0.5, step=6),
+            Message("honest_2", 0.5, 0.5, step=6),
+            Message("byz",      0.0, 0.0, step=6),
+        ]
+        buf = proto.receive(final_msgs)
+        assert "byz" not in buf
+        assert "honest_0" in buf
+
+    # --- scores clamped to [0.0, 1.0] ---
+
+    def test_scores_never_exceed_one(self):
+        proto = ReputationProtocol(trust_increment=0.5)
+        msgs = _make_messages(3, hider_x=0.5, hider_y=0.5)
+        for _ in range(10):
+            proto.receive(msgs)
+        for score in proto.trust_scores.values():
+            assert score <= 1.0
+
+    def test_scores_never_go_below_zero(self):
+        proto = ReputationProtocol(
+            min_trust=0.01, deviation_threshold=0.01, trust_decrement=0.5
+        )
+        msgs = [
+            Message("honest", 0.5, 0.5, step=0),
+            Message("byz",    0.0, 0.0, step=0),
+        ]
+        for _ in range(10):
+            proto.receive(msgs)
+        assert proto.trust_scores["byz"] >= 0.0
+
+    # --- reset restores all scores to 1.0 ---
+
+    def test_reset_restores_scores(self):
+        proto = ReputationProtocol(
+            min_trust=0.3, deviation_threshold=0.05, trust_decrement=0.2
+        )
+        for step in range(5):
+            msgs = [
+                Message("honest", 0.5, 0.5, step=step),
+                Message("byz",    0.0, 0.0, step=step),
+            ]
+            proto.receive(msgs)
+
+        assert proto.trust_scores["byz"] < 1.0
+        proto.reset()
+        for score in proto.trust_scores.values():
+            assert score == pytest.approx(1.0)
+
+    # --- all-None returns empty buffer ---
+
+    def test_all_none_returns_empty(self):
+        proto = ReputationProtocol()
+        buf = proto.receive([None, None])
+        assert buf == {}
+
+    # --- invalid constructor args ---
+
+    def test_invalid_min_trust_raises(self):
+        with pytest.raises(ValueError):
+            ReputationProtocol(min_trust=0.0)
+        with pytest.raises(ValueError):
+            ReputationProtocol(min_trust=1.1)
+
+    def test_invalid_deviation_threshold_raises(self):
+        with pytest.raises(ValueError):
+            ReputationProtocol(deviation_threshold=-0.1)
