@@ -8,15 +8,15 @@ as honest seekers; this module only intercepts communication.
 
 Subtype summary
 ---------------
-+---------------------+------------------------------------------------------+
-| Class               | What it corrupts                                     |
-+=====================+======================================================+
-| RandomNoiseByzantine| believed_hider_x/y → uniform random grid position   |
-| MisdirectionByzantine| believed_hider_x/y → reflection of true hider pos  |
-|                     | through the agent's own position (omniscient)        |
-| SpoofingByzantine   | sender_id → a randomly chosen other seeker's id     |
-| SilentByzantine     | returns None (no message transmitted)                |
-+---------------------+------------------------------------------------------+
++----------------------+------------------------------------------------------+
+| Class                | What it corrupts                                     |
++======================+======================================================+
+| RandomNoiseByzantine | believed_hider_x/y → uniform random grid position    |
+| MisdirectionByzantine| believed_hider_x/y → reflection of true hider pos    |
+|                      | through the agent's own position (omniscient)        |
+| SpoofingByzantine    | sender_id → a randomly chosen other seeker's id      |
+| SilentByzantine      | returns None (no message transmitted)                |
++----------------------+------------------------------------------------------+
 
 Constraints (from BYZ-01 interface contract)
 --------------------------------------------

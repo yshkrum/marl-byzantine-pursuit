@@ -208,6 +208,7 @@ def run_experiment(
     algo: str,
     n_eval_episodes: int,
     checkpoint_episodes: int,
+    checkpoint_tag: str = CHECKPOINT_TAG,
     dry_run: bool = False,
 ) -> None:
     byz_frac = float(condition.get("byzantine_fraction", 0.0))
@@ -229,7 +230,7 @@ def run_experiment(
     if dry_run:
         return
 
-    ckpt_dir = f"checkpoints/{algo}_{CHECKPOINT_TAG}_seed{seed}/ep{checkpoint_episodes}"
+    ckpt_dir = f"checkpoints/{algo}_{checkpoint_tag}_seed{seed}/ep{checkpoint_episodes}"
     if not Path(ckpt_dir).exists():
         print(f"    WARNING: checkpoint not found at {ckpt_dir} — skipping.")
         return
@@ -354,6 +355,9 @@ def main() -> None:
     parser.add_argument("--checkpoint_episodes",  type=int,
                         default=CHECKPOINT_EPISODES,
                         help=f"Episode suffix on checkpoint dir (default {CHECKPOINT_EPISODES})")
+    parser.add_argument("--checkpoint_tag",       type=str,
+                        default=CHECKPOINT_TAG,
+                        help=f"Tag used when training, e.g. 'exp' or 'obs3' (default {CHECKPOINT_TAG})")
     parser.add_argument("--dry-run",              action="store_true",
                         help="Print runs without executing")
     args = parser.parse_args()
@@ -366,7 +370,7 @@ def main() -> None:
     print(f"Algorithm  : {args.algo}")
     print(f"Conditions : {len(conditions)}  |  Seeds: {len(args.seeds)}  |  Total runs: {total}")
     print(
-        f"Checkpoints: checkpoints/{args.algo}_{CHECKPOINT_TAG}_seed*"
+        f"Checkpoints: checkpoints/{args.algo}_{args.checkpoint_tag}_seed*"
         f"/ep{args.checkpoint_episodes}/"
     )
     print()
@@ -378,6 +382,7 @@ def main() -> None:
                 algo=args.algo,
                 n_eval_episodes=args.n_eval_episodes,
                 checkpoint_episodes=args.checkpoint_episodes,
+                checkpoint_tag=args.checkpoint_tag,
                 dry_run=args.dry_run,
             )
 

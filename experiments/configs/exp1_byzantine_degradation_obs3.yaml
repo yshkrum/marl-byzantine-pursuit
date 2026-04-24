@@ -1,0 +1,43 @@
+# Experiment 1 (obs3 variant): Byzantine Degradation Curve
+# Owner: D (Experiment Runner)
+# Ticket: EXP-05
+#
+# Identical to exp1_byzantine_degradation.yaml except obs_radius=3.
+#
+# obs_radius=3 → 7x7 FoV = 49 cells / 256 = 19.1% map coverage.
+# Agents genuinely rely on peer messages → Byzantine corruption is measurable.
+# obs_radius=7 → 15x15 FoV = 225 cells / 256 = 87.9% coverage from centre;
+# agents rarely consult messages, so degradation is near-zero at obs7.
+#
+# Run with:
+#   python scripts/run_sweep.py \
+#     --config experiments/configs/exp1_byzantine_degradation_obs3.yaml \
+#     --checkpoint_tag obs3
+#
+# Checkpoints: checkpoints/{mappo,ippo}_obs3_seed{42,43,44}/ep1000/
+
+experiment:
+  name: exp1_byzantine_degradation_obs3
+  description: "Capture time vs Byzantine fraction, N=8, broadcast protocol, obs_radius=3"
+
+env:
+  grid_size: 16
+  n_seekers: 8
+  obs_radius: 3
+  obstacle_density: 0.15
+  max_steps: 500
+
+comms:
+  protocol: broadcast
+
+sweep:
+  byzantine_fraction: [0.0, 0.125, 0.25, 0.375, 0.5]
+
+logging:
+  metrics:
+    - capture_time
+    - capture_rate
+    - policy_entropy
+    - message_divergence
+  output_dir: experiments/results/exp1_obs3/
+  wandb_project: marl-byzantine-pursuit

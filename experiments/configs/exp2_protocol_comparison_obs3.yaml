@@ -1,0 +1,40 @@
+# Experiment 2 (obs3 variant): Resilience Protocol Comparison
+# Owner: D (Experiment Runner)
+# Ticket: EXP-06
+#
+# Identical to exp2_protocol_comparison.yaml except obs_radius=3.
+#
+# At obs_radius=3 agents cover only 19.1% of the map → messages are the
+# primary source of hider-position information → protocol choice matters.
+# Trimmed-mean and reputation protocols expected to show clearest recovery.
+#
+# Run with:
+#   python scripts/run_sweep.py \
+#     --config experiments/configs/exp2_protocol_comparison_obs3.yaml \
+#     --checkpoint_tag obs3
+#
+# Checkpoints: checkpoints/mappo_obs3_seed{42,43,44}/ep1000/
+
+experiment:
+  name: exp2_protocol_comparison_obs3
+  description: "Protocol comparison at f=0.25 (2/8 Byzantine), obs_radius=3"
+
+env:
+  grid_size: 16
+  n_seekers: 8
+  obs_radius: 3
+  obstacle_density: 0.15
+  max_steps: 500
+
+sweep:
+  byzantine_fraction: [0.25]
+  protocol: [none, broadcast, gossip, trimmed_mean, reputation]
+
+logging:
+  metrics:
+    - capture_time
+    - capture_rate
+    - policy_entropy
+    - convergence_episode
+  output_dir: experiments/results/exp2_obs3/
+  wandb_project: marl-byzantine-pursuit
