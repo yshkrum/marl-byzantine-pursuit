@@ -1,0 +1,37 @@
+# Experiment 1 (obs3): Byzantine Degradation Curve — partial observability
+# obs_radius=3: 7x7 FoV = 19.1% grid coverage → agents must rely on messages
+# This is the primary result config per handoff_obs3_experiments.md (EXP-05)
+#
+# OBS_DIM = 4 + 49 + 14 = 67  (n_seekers=8, grid_size=16, obs_radius=3)
+# Do NOT mix with obs7 checkpoints (OBS_DIM=243) — state dict will mismatch.
+
+experiment:
+  name: exp1_byzantine_degradation_obs3
+  description: "Capture rate vs Byzantine fraction, N=8, obs_radius=3, broadcast protocol"
+
+env:
+  grid_size: 16
+  n_seekers: 8
+  obs_radius: 3
+  obstacle_density: 0.25
+  max_steps: 500
+
+training:
+  algorithm: mappo
+  n_episodes: 200
+  n_seeds: 3
+
+comms:
+  protocol: broadcast
+
+sweep:
+  byzantine_fraction: [0.0, 0.125, 0.25, 0.375, 0.5]
+
+logging:
+  metrics:
+    - capture_rate
+    - capture_time
+    - policy_entropy
+    - message_divergence
+  output_dir: experiments/results/exp1_obs3/
+  wandb_project: marl-byzantine-pursuit
