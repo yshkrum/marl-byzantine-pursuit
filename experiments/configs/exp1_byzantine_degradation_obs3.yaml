@@ -1,29 +1,26 @@
-# Experiment 1 (obs3 variant): Byzantine Degradation Curve
-# Owner: D (Experiment Runner)
-# Ticket: EXP-05
+# Experiment 1 (obs3): Byzantine Degradation Curve — partial observability
+# obs_radius=3: 7x7 FoV = 19.1% grid coverage → agents must rely on messages
+# This is the primary result config per handoff_obs3_experiments.md (EXP-05)
 #
-# Identical to exp1_byzantine_degradation.yaml except obs_radius=3.
-#
-# obs_radius=3 → 7x7 FoV = 49 cells / 256 = 19.1% map coverage.
-# Agents genuinely rely on peer messages → Byzantine corruption is measurable.
-# obs_radius=7 → 15x15 FoV = 225 cells / 256 = 87.9% coverage from centre;
-# agents rarely consult messages, so degradation is near-zero at obs7.
-#
-# Run with:
-#   python scripts/run_sweep.py \
-#     --config experiments/configs/exp1_byzantine_degradation_obs3.yaml \
-#     --checkpoint_tag obs3
-#
-# Checkpoints: checkpoints/{mappo,ippo}_obs3_seed{42,43,44}/ep1000/
+# OBS_DIM = 4 + 49 + 14 = 67  (n_seekers=8, grid_size=16, obs_radius=3)
+# Do NOT mix with obs7 checkpoints (OBS_DIM=243) — state dict will mismatch.
 
 experiment:
   name: exp1_byzantine_degradation_obs3
-  description: "Capture time vs Byzantine fraction, N=8, broadcast protocol, obs_radius=3"
+  description: "Capture rate vs Byzantine fraction, N=8, obs_radius=3, broadcast protocol"
 
 env:
   grid_size: 16
   n_seekers: 8
   obs_radius: 3
+  obstacle_density: 0.25
+  max_steps: 500
+
+training:
+  algorithm: mappo
+  n_episodes: 200
+  n_seeds: 3
+
   obstacle_density: 0.15
   max_steps: 500
 
@@ -35,6 +32,8 @@ sweep:
 
 logging:
   metrics:
+    - capture_rate
+    - capture_time
     - capture_time
     - capture_rate
     - policy_entropy

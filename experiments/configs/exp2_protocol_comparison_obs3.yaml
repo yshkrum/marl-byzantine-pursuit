@@ -1,3 +1,13 @@
+# Experiment 2 (obs3): Protocol Comparison — partial observability
+# obs_radius=3: agents must rely on messages → protocol choice matters here
+# f=0.25 (2/8 Byzantine), vary protocol across all 5 options (EXP-06)
+#
+# OBS_DIM = 4 + 49 + 14 = 67  (n_seekers=8, grid_size=16, obs_radius=3)
+# Do NOT mix with obs7 checkpoints (OBS_DIM=243) — state dict will mismatch.
+
+experiment:
+  name: exp2_protocol_comparison_obs3
+  description: "Protocol comparison at f=0.25, N=8, obs_radius=3"
 # Experiment 2 (obs3 variant): Resilience Protocol Comparison
 # Owner: D (Experiment Runner)
 # Ticket: EXP-06
@@ -23,6 +33,14 @@ env:
   grid_size: 16
   n_seekers: 8
   obs_radius: 3
+  obstacle_density: 0.25
+  max_steps: 500
+
+training:
+  algorithm: mappo
+  n_episodes: 200
+  n_seeds: 3
+
   obstacle_density: 0.15
   max_steps: 500
 
@@ -32,6 +50,8 @@ sweep:
 
 logging:
   metrics:
+    - capture_rate
+    - capture_time
     - capture_time
     - capture_rate
     - policy_entropy

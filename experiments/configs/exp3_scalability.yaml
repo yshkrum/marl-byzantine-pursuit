@@ -1,0 +1,43 @@
+# Experiment 3: Scalability — Capture Rate vs Team Size
+# Owner: D (Experiment Runner)
+# Ticket: EXP-04
+# Reviewed by: [add names before running]
+#
+# Research question: at what team size does coordination itself become the
+# bottleneck? Vary N with f=0 (no Byzantine agents) to isolate the effect
+# of team size from communication corruption.
+#
+# Fixed: f=0.0, best protocol (broadcast), maze environment.
+# Sweep: N ∈ {2, 4, 6, 8, 10, 14}
+
+experiment:
+  name: exp3_scalability
+  description: "Capture rate vs team size N, f=0.0, broadcast protocol"
+
+env:
+  grid_size: 20
+  obs_radius: 5
+  obstacle_density: 0.25
+  max_steps: 500
+  # n_seekers is swept below — do not set a fixed value here
+
+training:
+  algorithm: mappo
+  n_episodes: 300
+  n_seeds: 5
+
+comms:
+  protocol: broadcast
+
+sweep:
+  n_seekers: [2, 4, 6, 8, 10, 14]
+  byzantine_fraction: [0.0]
+
+logging:
+  metrics:
+    - capture_time
+    - capture_rate
+    - policy_entropy
+    - gradient_variance
+  output_dir: experiments/results/exp3/
+  wandb_project: marl-byzantine-pursuit
