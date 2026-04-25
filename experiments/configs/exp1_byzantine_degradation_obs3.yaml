@@ -21,6 +21,9 @@ training:
   n_episodes: 200
   n_seeds: 3
 
+  obstacle_density: 0.15
+  max_steps: 500
+
 comms:
   protocol: broadcast
 
@@ -31,6 +34,8 @@ logging:
   metrics:
     - capture_rate
     - capture_time
+    - capture_time
+    - capture_rate
     - policy_entropy
     - message_divergence
   output_dir: experiments/results/exp1_obs3/
