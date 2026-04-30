@@ -681,10 +681,13 @@ class ByzantinePursuitEnv(AECEnv):
         #     SilentByzantine → reset slot to sentinel; others → write buffer.
         if agent.startswith("seeker_") and self._protocol is not None:
             from comms.interface import EnvState
+            _r_h, _c_h = self.positions["hider"]
+            _norm = float(self.grid_size - 1)
             _state = EnvState(
                 obs=self._get_observation(agent),
                 step=self._step_count,
                 grid_size=self.grid_size,
+                true_hider_pos=(_r_h / _norm, _c_h / _norm),
             )
             _msg = self._protocol.send(agent, _state)
             if agent in self._byzantine_agents:
