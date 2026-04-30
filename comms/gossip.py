@@ -89,11 +89,7 @@ class GossipProtocol(BaseProtocol):
             Honest message ready to be (optionally) corrupted by a Byzantine
             agent before being passed to ``receive()``.
         """
-        hider_x = float(state.obs[2])
-        hider_y = float(state.obs[3])
-
-        bx: Optional[float] = None if hider_x == SENTINEL else hider_x
-        by: Optional[float] = None if hider_y == SENTINEL else hider_y
+        bx, by = state.true_hider_pos
 
         return Message(
             sender_id=agent_id,

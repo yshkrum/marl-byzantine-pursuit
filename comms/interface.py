@@ -78,6 +78,7 @@ class EnvState:
     obs: np.ndarray
     step: int
     grid_size: int
+    true_hider_pos: tuple[float, float]  # normalised (row/norm, col/norm), always valid
 
 
 # ---------------------------------------------------------------------------
